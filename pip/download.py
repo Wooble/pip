@@ -23,6 +23,7 @@ from pip.exceptions import InstallationError, HashMismatch
 from pip.models import PyPI
 from pip.utils import (splitext, rmtree, format_size, display_path,
                        backup_dir, ask_path_exists, unpack_file)
+from pip.utils.filesystem import check_path_owner
 from pip.utils.ui import DownloadProgressBar, DownloadProgressSpinner
 from pip.locations import write_delete_marker_file
 from pip.vcs import vcs
@@ -225,7 +226,31 @@ class SafeFileCache(FileCache):
     not be accessible or writable.
     """
 
+    def __init__(self, *args, **kwargs):
+        super(SafeFileCache, self).__init__(*args, **kwargs)
+
+        # Check to ensure that the directory containing our cache directory
+        # is owned by the user current executing pip. If it does not exist
+        # we will check the parent directory until we find one that does exist.
+        # If it is not owned by the user executing pip then we will disable
+        # the cache and log a warning.
+        if not check_path_owner(self.directory):
+            logger.warning(
+                "The directory '%s' or its parent directory is not owned by "
+                "the current user and the cache has been disabled. Please "
+                "check the permissions and owner of that directory. If "
+                "executing pip with sudo, you may want the -H flag.",
+                self.directory,
+            )
+
+            # Set our directory to None to disable the Cache
+            self.directory = None
+
     def get(self, *args, **kwargs):
+        # If we don't have a directory, then the cache should be a no-op.
+        if self.directory is None:
+            return
+
         try:
             return super(SafeFileCache, self).get(*args, **kwargs)
         except (LockError, OSError, IOError):
@@ -235,6 +260,10 @@ class SafeFileCache(FileCache):
             pass
 
     def set(self, *args, **kwargs):
+        # If we don't have a directory, then the cache should be a no-op.
+        if self.directory is None:
+            return
+
         try:
             return super(SafeFileCache, self).set(*args, **kwargs)
         except (LockError, OSError, IOError):
@@ -244,6 +273,10 @@ class SafeFileCache(FileCache):
             pass
 
     def delete(self, *args, **kwargs):
+        # If we don't have a directory, then the cache should be a no-op.
+        if self.directory is None:
+            return
+
         try:
             return super(SafeFileCache, self).delete(*args, **kwargs)
         except (LockError, OSError, IOError):
@@ -253,6 +286,13 @@ class SafeFileCache(FileCache):
             pass
 
 
+class InsecureHTTPAdapter(HTTPAdapter):
+
+    def cert_verify(self, conn, url, verify, cert):
+        conn.cert_reqs = 'CERT_NONE'
+        conn.ca_certs = None
+
+
 class PipSession(requests.Session):
 
     timeout = None
@@ -260,6 +300,7 @@ class PipSession(requests.Session):
     def __init__(self, *args, **kwargs):
         retries = kwargs.pop("retries", 0)
         cache = kwargs.pop("cache", None)
+        insecure_hosts = kwargs.pop("insecure_hosts", [])
 
         super(PipSession, self).__init__(*args, **kwargs)
 
@@ -287,19 +328,34 @@ class PipSession(requests.Session):
             backoff_factor=0.25,
         )
 
+        # We want to _only_ cache responses on securely fetched origins. We do
+        # this because we can't validate the response of an insecurely fetched
+        # origin, and we don't want someone to be able to poison the cache and
+        # require manual evication from the cache to fix it.
         if cache:
-            http_adapter = CacheControlAdapter(
+            secure_adapter = CacheControlAdapter(
                 cache=SafeFileCache(cache),
                 max_retries=retries,
             )
         else:
-            http_adapter = HTTPAdapter(max_retries=retries)
+            secure_adapter = HTTPAdapter(max_retries=retries)
 
-        self.mount("http://", http_adapter)
-        self.mount("https://", http_adapter)
+        # Our Insecure HTTPAdapter disables HTTPS validation. It does not
+        # support caching (see above) so we'll use it for all http:// URLs as
+        # well as any https:// host that we've marked as ignoring TLS errors
+        # for.
+        insecure_adapter = InsecureHTTPAdapter(max_retries=retries)
+
+        self.mount("https://", secure_adapter)
+        self.mount("http://", insecure_adapter)
 
         # Enable file:// urls
         self.mount("file://", LocalFSAdapter())
+
+        # We want to use a non-validating adapter for any requests which are
+        # deemed insecure.
+        for host in insecure_hosts:
+            self.mount("https://{0}/".format(host), insecure_adapter)
 
     def request(self, method, url, *args, **kwargs):
         # Allow setting a default timeout on a session
@@ -481,7 +537,9 @@ def _download_url(resp, link, content_file):
 
     cached_resp = getattr(resp, "from_cache", False)
 
-    if cached_resp:
+    if logger.getEffectiveLevel() > logging.INFO:
+        show_progress = False
+    elif cached_resp:
         show_progress = False
     elif total_length > (40 * 1000):
         show_progress = True
@@ -633,10 +691,7 @@ def unpack_file_url(link, location, download_dir=None):
     if os.path.isdir(link_path):
         if os.path.isdir(location):
             rmtree(location)
-        shutil.copytree(
-            link_path, location, symlinks=True,
-            ignore=shutil.ignore_patterns(
-                '.tox', '.git', '.hg', '.bzr', '.svn'))
+        shutil.copytree(link_path, location, symlinks=True)
         if download_dir:
             logger.info('Link is a directory, ignoring download_dir')
         return

@@ -56,7 +56,6 @@ Install behind a proxy::
   python get-pip.py --proxy="[user:passwd@]proxy.server:port"
 
 
-
 Upgrade pip
 -----------
 

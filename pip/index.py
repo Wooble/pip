@@ -360,7 +360,7 @@ class PackageFinder(object):
             logger.debug(
                 'dependency_links found: %s',
                 ', '.join([
-                    link.url for p, link, version in dependency_versions
+                    version.location.url for version in dependency_versions
                 ])
             )
         file_versions = list(
@@ -431,10 +431,12 @@ class PackageFinder(object):
                 ),
             )
         )
-        all_versions = [x for x in all_versions if x.version in _versions]
+        applicable_versions = [
+            x for x in all_versions if x.version in _versions
+        ]
 
         # Finally add our existing versions to the front of our versions.
-        applicable_versions = installed_version + all_versions
+        applicable_versions = installed_version + applicable_versions
 
         applicable_versions = self._sort_versions(applicable_versions)
         existing_applicable = any(
@@ -491,7 +493,7 @@ class PackageFinder(object):
         if applicable_versions[0].location is INSTALLED_VERSION:
             # We have an existing version, and its the best version
             logger.debug(
-                'Installed version (%s) is most up-to-date (past versions: ',
+                'Installed version (%s) is most up-to-date (past versions: '
                 '%s)',
                 req.satisfied_by.version,
                 ', '.join(str(i.version) for i in applicable_versions[1:])

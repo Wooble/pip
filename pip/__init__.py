@@ -16,6 +16,9 @@ from pip.vcs import git, mercurial, subversion, bazaar  # noqa
 from pip.baseparser import ConfigOptionParser, UpdatingDefaultsHelpFormatter
 from pip.commands import get_summaries, get_similar_commands
 from pip.commands import commands_dict
+from pip._vendor.requests.packages.urllib3.exceptions import (
+    InsecureRequestWarning,
+)
 
 
 # assignment for flake8 to be happy
@@ -27,10 +30,13 @@ import pip.cmdoptions
 cmdoptions = pip.cmdoptions
 
 # The version as used in the setup.py and the docs conf.py
-__version__ = "6.0.dev1"
+__version__ = "6.1.0.dev0"
 
 
 logger = logging.getLogger(__name__)
+
+# Hide the InsecureRequestWArning from urllib3
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 
 def autocomplete():
@@ -253,7 +259,7 @@ class FrozenRequirement(object):
             editable = False
             req = dist.as_requirement()
             specs = req.specs
-            assert len(specs) == 1 and specs[0][0] == '=='
+            assert len(specs) == 1 and specs[0][0] in ["==", "==="]
             version = specs[0][1]
             ver_match = cls._rev_re.search(version)
             date_match = cls._date_re.search(version)
